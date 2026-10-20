@@ -1,0 +1,3058 @@
+local source = [====[
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local player = Players.LocalPlayer
+while not player do
+    task.wait()
+    player = Players.LocalPlayer
+end
+local playerGui = player:WaitForChild("PlayerGui")
+local environment = getgenv()
+local runKey = "CampaignAutofarm_v12_" .. game.JobId
+if environment[runKey] then
+    return
+end
+environment[runKey] = true
+
+local statusGui = Instance.new("ScreenGui")
+statusGui.Name = "CampaignAutofarm_v12"
+statusGui.ResetOnSpawn = false
+statusGui.DisplayOrder = 10000
+statusGui.Parent = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
+
+local statusLabel = Instance.new("TextLabel")
+statusLabel.Size = UDim2.new(0, 520, 0, 200)
+statusLabel.Position = UDim2.new(1, -532, 0, 12)
+statusLabel.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+statusLabel.BackgroundTransparency = 0.15
+statusLabel.TextColor3 = Color3.fromRGB(235, 235, 235)
+statusLabel.TextSize = 16
+statusLabel.Font = Enum.Font.Code
+statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+statusLabel.TextYAlignment = Enum.TextYAlignment.Top
+statusLabel.TextWrapped = true
+statusLabel.Parent = statusGui
+
+local messages = {}
+local function setStatus(...)
+    local values = table.pack(...)
+    for index = 1, values.n do
+        values[index] = tostring(values[index])
+    end
+    table.insert(messages, table.concat(values, " ", 1, values.n))
+    while #messages > 8 do
+        table.remove(messages, 1)
+    end
+    statusLabel.Text = table.concat(messages, "\n")
+end
+
+local success, failure = xpcall(function()
+    local queueTeleport = queue_on_teleport or queueonteleport or queue_on_tp or queueontp
+    assert(type(queueTeleport) == "function", "Teleport queue is unavailable")
+    local TeleportService = game:GetService("TeleportService")
+    local queued = false
+    local function queueNext(destination)
+        if not queued then
+            queueTeleport("local source = " .. string.format("%q", source) .. "\n" .. source)
+            queued = true
+        end
+    end
+
+    local function armTeleportFallback(fromMatch)
+        task.spawn(function()
+            while true do
+                task.wait(5)
+                local ok, message = pcall(function()
+                    queueNext("lobby")
+                    if fromMatch then
+                        setStatus("Teleport overdue: retrying ReturnBack")
+                        local remotes = ReplicatedStorage:WaitForChild("Connection"):WaitForChild("inGame")
+                        remotes:WaitForChild("ReturnBack"):FireServer()
+                    else
+                        setStatus("Teleport overdue: rejoining lobby")
+                        TeleportService:Teleport(game.PlaceId, player)
+                    end
+                end)
+                if not ok then
+                    setStatus("Teleport fallback error:", message)
+                end
+            end
+        end)
+    end
+
+    setStatus("Waiting for lobby or match indicators")
+    local connection = ReplicatedStorage:WaitForChild("Connection")
+    local function hasMatchMarker()
+        local marker = player:FindFirstChild("isBot")
+        return marker ~= nil and marker:IsA("BoolValue")
+    end
+
+    local function hasMatchGui()
+        local gameGui = playerGui:FindFirstChild("GameGui")
+        return gameGui ~= nil and gameGui:IsA("ScreenGui")
+            and gameGui:FindFirstChild("TurnStart") ~= nil
+    end
+
+    local function hasLobbyGui()
+        local lobbyGui = playerGui:FindFirstChild("LobbyUI")
+        return lobbyGui ~= nil and lobbyGui:IsA("ScreenGui") and lobbyGui.Enabled
+            and lobbyGui:FindFirstChild("LobbyScript") ~= nil
+            and lobbyGui:FindFirstChild("Body") ~= nil
+    end
+
+    local inMatch
+    local lobbyReadySince
+    while inMatch == nil do
+        if hasMatchMarker() or playerGui:FindFirstChild("Waiting") or hasMatchGui() then
+            setStatus("Match indicators detected: waiting for isBot")
+            while not hasMatchMarker() do
+                task.wait(0.1)
+            end
+            inMatch = true
+        elseif hasLobbyGui() then
+            lobbyReadySince = lobbyReadySince or os.clock()
+            if os.clock() - lobbyReadySince >= 1 then
+                inMatch = false
+            end
+        else
+            lobbyReadySince = nil
+        end
+        if inMatch == nil then
+            task.wait(0.1)
+        end
+    end
+
+    setStatus(inMatch and "Confirmed match: isBot exists" or "Confirmed lobby: LobbyUI enabled")
+
+    if not inMatch then
+        local lobby = connection:WaitForChild("lobby")
+        setStatus("Lobby: setting loadout")
+        lobby:WaitForChild("profile_action"):InvokeServer("add_unit", 1, 3, "_9790")
+        task.wait(0.1)
+        setStatus("Lobby: creating invite-only campaign room")
+        lobby:WaitForChild("room_create"):FireServer({
+            {index = "inviteOnly", value = true},
+            {index = "groupId", value = "Campaign"}
+        })
+        task.wait(0.1)
+        setStatus("Lobby: selecting Eastern front, map 4")
+        lobby:WaitForChild("room_edit"):InvokeServer("map", "Eastern front", 4)
+        task.wait(0.1)
+        lobby.room_edit:InvokeServer("mode", "3")
+        task.wait(0.1)
+        queueNext("match")
+        setStatus("Lobby: starting match; continuation queued")
+        armTeleportFallback(false)
+        lobby:WaitForChild("room_start"):FireServer()
+        return
+    end
+
+    setStatus("Match detected: waiting for loading to finish")
+    while true do
+        local deploymentGui = playerGui:FindFirstChild("Deployment")
+        local gameGui = playerGui:FindFirstChild("GameGui")
+        local waiting = playerGui:FindFirstChild("Waiting")
+        local selectUnit = deploymentGui and deploymentGui:FindFirstChild("SelectUnit")
+        local content = selectUnit and selectUnit:FindFirstChild("Content")
+        local card = content and content:FindFirstChild("_9790")
+        if not waiting
+            and deploymentGui and deploymentGui:IsA("ScreenGui")
+            and gameGui and gameGui:IsA("ScreenGui") and gameGui.Enabled
+            and workspace:GetAttribute("mapLoaded")
+            and card
+        then
+            break
+        end
+        task.wait(0.1)
+    end
+    setStatus("Waiting GUI removed; map and deployment card ready")
+
+    local inGame = connection:WaitForChild("inGame")
+    local voting = inGame:WaitForChild("Voting")
+    local matchEnded = false
+    local endConnections = {}
+    local endWatched = {}
+    local function watchEnd(remote)
+        if remote.Name == "GameEnded" and remote:IsA("RemoteEvent") and not endWatched[remote] then
+            endWatched[remote] = true
+            table.insert(endConnections, remote.OnClientEvent:Connect(function()
+                matchEnded = true
+            end))
+        end
+    end
+    table.insert(endConnections, inGame.DescendantAdded:Connect(watchEnd))
+    for _, remote in ipairs(inGame:GetDescendants()) do
+        watchEnd(remote)
+    end
+
+    local function returnButtonVisible()
+        local winGui = playerGui:FindFirstChild("WinGui")
+        if not winGui then
+            return false
+        end
+        for _, child in ipairs(winGui:GetDescendants()) do
+            if child.Name == "ReturnBack" and child:IsA("GuiButton") then
+                local visible = true
+                local ancestor = child
+                while ancestor and ancestor ~= playerGui do
+                    if ancestor:IsA("GuiObject") and not ancestor.Visible then
+                        visible = false
+                    elseif ancestor:IsA("ScreenGui") and not ancestor.Enabled then
+                        visible = false
+                    end
+                    ancestor = ancestor.Parent
+                end
+                if visible then
+                    return true
+                end
+            end
+        end
+        return false
+    end
+
+    setStatus("Loading complete: running deployment sequence")
+local function readyAndWaitForTurn()
+    local turnReady = false
+    local resumed = Instance.new("BindableEvent")
+    local connections = {}
+    local watched = {}
+
+    local function watch(frame)
+        local gameGui = playerGui:FindFirstChild("GameGui")
+        if not gameGui or frame.Parent ~= gameGui or frame.Name ~= "TurnStart" or not frame:IsA("GuiObject") or watched[frame] then
+            return
+        end
+
+        watched[frame] = true
+        table.insert(connections, frame:GetPropertyChangedSignal("Visible"):Connect(function()
+            if frame.Visible then
+                turnReady = true
+                resumed:Fire()
+            end
+        end))
+    end
+
+    table.insert(connections, playerGui.DescendantAdded:Connect(watch))
+
+    local gameGui = playerGui:FindFirstChild("GameGui")
+    local turnStart = gameGui and gameGui:FindFirstChild("TurnStart")
+    if turnStart then
+        watch(turnStart)
+    end
+
+    setStatus("Sending ready vote")
+    voting:FireServer()
+    setStatus("Ready vote sent; waiting for TurnStart.Visible = true")
+
+    while not turnReady do
+        resumed.Event:Wait()
+    end
+
+    for _, connection in ipairs(connections) do
+        connection:Disconnect()
+    end
+    resumed:Destroy()
+    setStatus("Turn detected; continuing sequence")
+end
+
+local Deployment = require(
+    ReplicatedStorage:WaitForChild("Modules")
+        :WaitForChild("InGame")
+        :WaitForChild("Deployment")
+)
+
+local unitId = "_9790"
+local deploymentTiles = {
+    {x = -239, y = -82},
+    {x = -238, y = -82},
+    {x = -238, y = -81},
+    {x = -237, y = -81},
+    {x = -239, y = -80},
+    {x = -237, y = -80}
+}
+
+setStatus("Waiting for initialized deployment data")
+while not Deployment.isActive or not Deployment:get() do
+    task.wait(0.1)
+end
+
+for _, position in ipairs(deploymentTiles) do
+    assert(Deployment.isActive, "Deployment ended before the sequence finished")
+
+    local x = position.x
+    local y = position.y
+    local tile = Deployment:getTileAt(x, y)
+
+    assert(tile, string.format("Invalid deployment tile: %d, %d", x, y))
+
+    if table.find(tile.units, unitId) then
+        setStatus("Already deployed:", unitId, x, y)
+    else
+        local selectedUnit
+
+        for _, unit in ipairs(Deployment:getOptionsAt(x, y)) do
+            if unit.id == unitId then
+                selectedUnit = unit
+                break
+            end
+        end
+
+        if selectedUnit then
+            Deployment:deployAt(x, y, selectedUnit)
+            setStatus("Deployment requested:", unitId, x, y)
+            task.wait(0.1)
+        else
+            local deploymentData = Deployment:get()
+            setStatus("Skipped unavailable tile:", x, y, "Remaining tix:", deploymentData and deploymentData.tix)
+        end
+    end
+end
+
+setStatus("All six deployment tiles processed")
+readyAndWaitForTurn()
+
+local args = {
+	"41",
+	1,
+	-239,
+	-82
+}
+game:GetService("ReplicatedStorage"):WaitForChild("Connection"):WaitForChild("inGame"):WaitForChild("actions"):WaitForChild("Ability"):FireServer(unpack(args))
+
+local args = {
+	"38",
+	1,
+	-238,
+	-82
+}
+game:GetService("ReplicatedStorage"):WaitForChild("Connection"):WaitForChild("inGame"):WaitForChild("actions"):WaitForChild("Ability"):FireServer(unpack(args))
+
+local args = {
+	"42",
+	1,
+	-238,
+	-81
+}
+game:GetService("ReplicatedStorage"):WaitForChild("Connection"):WaitForChild("inGame"):WaitForChild("actions"):WaitForChild("Ability"):FireServer(unpack(args))
+
+
+local args = {
+	"40",
+	1,
+	-239,
+	-80
+}
+game:GetService("ReplicatedStorage"):WaitForChild("Connection"):WaitForChild("inGame"):WaitForChild("actions"):WaitForChild("Ability"):FireServer(unpack(args))
+
+local args = {
+	"39",
+	1,
+	-237,
+	-81
+}
+game:GetService("ReplicatedStorage"):WaitForChild("Connection"):WaitForChild("inGame"):WaitForChild("actions"):WaitForChild("Ability"):FireServer(unpack(args))
+
+local args = {
+	"40",
+	{
+		{
+			y = -80,
+			x = -239,
+			z = 0,
+			moveCost = 0,
+			occupied = true,
+			range = 0,
+			terrain = "Road"
+		},
+		{
+			y = -80,
+			x = -240,
+			occupied = false,
+			z = 0,
+			moveCost = 1,
+			terrain = "Road",
+			range = 1,
+			parent = {
+				y = -80,
+				x = -239,
+				z = 0,
+				moveCost = 0,
+				occupied = true,
+				range = 0,
+				terrain = "Road"
+			}
+		},
+		{
+			y = -80,
+			x = -241,
+			occupied = false,
+			z = 0,
+			moveCost = 2,
+			terrain = "Forest",
+			range = 2,
+			parent = {
+				y = -80,
+				x = -240,
+				occupied = false,
+				z = 0,
+				moveCost = 1,
+				terrain = "Road",
+				range = 1,
+				parent = {
+					y = -80,
+					x = -239,
+					z = 0,
+					moveCost = 0,
+					occupied = true,
+					range = 0,
+					terrain = "Road"
+				}
+			}
+		},
+		{
+			y = -80,
+			x = -242,
+			occupied = false,
+			z = 0,
+			moveCost = 3,
+			terrain = "Urban",
+			range = 3,
+			parent = {
+				y = -80,
+				x = -241,
+				occupied = false,
+				z = 0,
+				moveCost = 2,
+				terrain = "Forest",
+				range = 2,
+				parent = {
+					y = -80,
+					x = -240,
+					occupied = false,
+					z = 0,
+					moveCost = 1,
+					terrain = "Road",
+					range = 1,
+					parent = {
+						y = -80,
+						x = -239,
+						z = 0,
+						moveCost = 0,
+						occupied = true,
+						range = 0,
+						terrain = "Road"
+					}
+				}
+			}
+		},
+		{
+			y = -80,
+			x = -243,
+			occupied = false,
+			z = 0,
+			moveCost = 4,
+			terrain = "Road",
+			range = 4,
+			parent = {
+				y = -80,
+				x = -242,
+				occupied = false,
+				z = 0,
+				moveCost = 3,
+				terrain = "Urban",
+				range = 3,
+				parent = {
+					y = -80,
+					x = -241,
+					occupied = false,
+					z = 0,
+					moveCost = 2,
+					terrain = "Forest",
+					range = 2,
+					parent = {
+						y = -80,
+						x = -240,
+						occupied = false,
+						z = 0,
+						moveCost = 1,
+						terrain = "Road",
+						range = 1,
+						parent = {
+							y = -80,
+							x = -239,
+							z = 0,
+							moveCost = 0,
+							occupied = true,
+							range = 0,
+							terrain = "Road"
+						}
+					}
+				}
+			}
+		}
+	}
+}
+game:GetService("ReplicatedStorage"):WaitForChild("Connection"):WaitForChild("inGame"):WaitForChild("actions"):WaitForChild("Move"):FireServer(unpack(args))
+
+
+local args = {
+	"41",
+	{
+		{
+			y = -82,
+			x = -239,
+			z = 0,
+			moveCost = 0,
+			occupied = true,
+			range = 0,
+			terrain = "Snow"
+		},
+		{
+			y = -83,
+			x = -239,
+			occupied = false,
+			z = 0,
+			moveCost = 1,
+			terrain = "Snow",
+			range = 1,
+			parent = {
+				y = -82,
+				x = -239,
+				z = 0,
+				moveCost = 0,
+				occupied = true,
+				range = 0,
+				terrain = "Snow"
+			}
+		},
+		{
+			y = -84,
+			x = -239,
+			occupied = false,
+			z = 0,
+			moveCost = 2,
+			terrain = "Urban",
+			range = 2,
+			parent = {
+				y = -83,
+				x = -239,
+				occupied = false,
+				z = 0,
+				moveCost = 1,
+				terrain = "Snow",
+				range = 1,
+				parent = {
+					y = -82,
+					x = -239,
+					z = 0,
+					moveCost = 0,
+					occupied = true,
+					range = 0,
+					terrain = "Snow"
+				}
+			}
+		},
+		{
+			y = -85,
+			x = -239,
+			occupied = false,
+			z = 0,
+			moveCost = 3,
+			terrain = "Road",
+			range = 3,
+			parent = {
+				y = -84,
+				x = -239,
+				occupied = false,
+				z = 0,
+				moveCost = 2,
+				terrain = "Urban",
+				range = 2,
+				parent = {
+					y = -83,
+					x = -239,
+					occupied = false,
+					z = 0,
+					moveCost = 1,
+					terrain = "Snow",
+					range = 1,
+					parent = {
+						y = -82,
+						x = -239,
+						z = 0,
+						moveCost = 0,
+						occupied = true,
+						range = 0,
+						terrain = "Snow"
+					}
+				}
+			}
+		},
+		{
+			y = -86,
+			x = -239,
+			occupied = false,
+			z = 0,
+			moveCost = 4,
+			terrain = "Road",
+			range = 4,
+			parent = {
+				y = -85,
+				x = -239,
+				occupied = false,
+				z = 0,
+				moveCost = 3,
+				terrain = "Road",
+				range = 3,
+				parent = {
+					y = -84,
+					x = -239,
+					occupied = false,
+					z = 0,
+					moveCost = 2,
+					terrain = "Urban",
+					range = 2,
+					parent = {
+						y = -83,
+						x = -239,
+						occupied = false,
+						z = 0,
+						moveCost = 1,
+						terrain = "Snow",
+						range = 1,
+						parent = {
+							y = -82,
+							x = -239,
+							z = 0,
+							moveCost = 0,
+							occupied = true,
+							range = 0,
+							terrain = "Snow"
+						}
+					}
+				}
+			}
+		}
+	}
+}
+game:GetService("ReplicatedStorage"):WaitForChild("Connection"):WaitForChild("inGame"):WaitForChild("actions"):WaitForChild("Move"):FireServer(unpack(args))
+
+local args = {
+	"38",
+	{
+		{
+			y = -82,
+			x = -238,
+			z = 0,
+			moveCost = 0,
+			occupied = true,
+			range = 0,
+			terrain = "Road"
+		},
+		{
+			y = -83,
+			x = -238,
+			occupied = false,
+			z = 0,
+			moveCost = 1,
+			terrain = "Road",
+			range = 1,
+			parent = {
+				y = -82,
+				x = -238,
+				z = 0,
+				moveCost = 0,
+				occupied = true,
+				range = 0,
+				terrain = "Road"
+			}
+		},
+		{
+			y = -84,
+			x = -238,
+			occupied = false,
+			z = 0,
+			moveCost = 2,
+			terrain = "Road",
+			range = 2,
+			parent = {
+				y = -83,
+				x = -238,
+				occupied = false,
+				z = 0,
+				moveCost = 1,
+				terrain = "Road",
+				range = 1,
+				parent = {
+					y = -82,
+					x = -238,
+					z = 0,
+					moveCost = 0,
+					occupied = true,
+					range = 0,
+					terrain = "Road"
+				}
+			}
+		},
+		{
+			y = -85,
+			x = -238,
+			occupied = false,
+			z = 0,
+			moveCost = 3,
+			terrain = "Road",
+			range = 3,
+			parent = {
+				y = -84,
+				x = -238,
+				occupied = false,
+				z = 0,
+				moveCost = 2,
+				terrain = "Road",
+				range = 2,
+				parent = {
+					y = -83,
+					x = -238,
+					occupied = false,
+					z = 0,
+					moveCost = 1,
+					terrain = "Road",
+					range = 1,
+					parent = {
+						y = -82,
+						x = -238,
+						z = 0,
+						moveCost = 0,
+						occupied = true,
+						range = 0,
+						terrain = "Road"
+					}
+				}
+			}
+		},
+		{
+			y = -86,
+			x = -238,
+			occupied = false,
+			z = 0,
+			moveCost = 4,
+			terrain = "Urban",
+			range = 4,
+			parent = {
+				y = -85,
+				x = -238,
+				occupied = false,
+				z = 0,
+				moveCost = 3,
+				terrain = "Road",
+				range = 3,
+				parent = {
+					y = -84,
+					x = -238,
+					occupied = false,
+					z = 0,
+					moveCost = 2,
+					terrain = "Road",
+					range = 2,
+					parent = {
+						y = -83,
+						x = -238,
+						occupied = false,
+						z = 0,
+						moveCost = 1,
+						terrain = "Road",
+						range = 1,
+						parent = {
+							y = -82,
+							x = -238,
+							z = 0,
+							moveCost = 0,
+							occupied = true,
+							range = 0,
+							terrain = "Road"
+						}
+					}
+				}
+			}
+		}
+	}
+}
+game:GetService("ReplicatedStorage"):WaitForChild("Connection"):WaitForChild("inGame"):WaitForChild("actions"):WaitForChild("Move"):FireServer(unpack(args))
+
+local args = {
+	"42",
+	{
+		{
+			y = -81,
+			x = -238,
+			z = 0,
+			moveCost = 0,
+			occupied = true,
+			range = 0,
+			terrain = "Road"
+		},
+		{
+			y = -82,
+			x = -238,
+			occupied = false,
+			z = 0,
+			moveCost = 1,
+			terrain = "Road",
+			range = 1,
+			parent = {
+				y = -81,
+				x = -238,
+				z = 0,
+				moveCost = 0,
+				occupied = true,
+				range = 0,
+				terrain = "Road"
+			}
+		},
+		{
+			y = -83,
+			x = -238,
+			occupied = false,
+			z = 0,
+			moveCost = 2,
+			terrain = "Road",
+			range = 2,
+			parent = {
+				y = -82,
+				x = -238,
+				occupied = false,
+				z = 0,
+				moveCost = 1,
+				terrain = "Road",
+				range = 1,
+				parent = {
+					y = -81,
+					x = -238,
+					z = 0,
+					moveCost = 0,
+					occupied = true,
+					range = 0,
+					terrain = "Road"
+				}
+			}
+		},
+		{
+			y = -84,
+			x = -238,
+			occupied = false,
+			z = 0,
+			moveCost = 3,
+			terrain = "Road",
+			range = 3,
+			parent = {
+				y = -83,
+				x = -238,
+				occupied = false,
+				z = 0,
+				moveCost = 2,
+				terrain = "Road",
+				range = 2,
+				parent = {
+					y = -82,
+					x = -238,
+					occupied = false,
+					z = 0,
+					moveCost = 1,
+					terrain = "Road",
+					range = 1,
+					parent = {
+						y = -81,
+						x = -238,
+						z = 0,
+						moveCost = 0,
+						occupied = true,
+						range = 0,
+						terrain = "Road"
+					}
+				}
+			}
+		},
+		{
+			y = -85,
+			x = -238,
+			occupied = false,
+			z = 0,
+			moveCost = 4,
+			terrain = "Road",
+			range = 4,
+			parent = {
+				y = -84,
+				x = -238,
+				occupied = false,
+				z = 0,
+				moveCost = 3,
+				terrain = "Road",
+				range = 3,
+				parent = {
+					y = -83,
+					x = -238,
+					occupied = false,
+					z = 0,
+					moveCost = 2,
+					terrain = "Road",
+					range = 2,
+					parent = {
+						y = -82,
+						x = -238,
+						occupied = false,
+						z = 0,
+						moveCost = 1,
+						terrain = "Road",
+						range = 1,
+						parent = {
+							y = -81,
+							x = -238,
+							z = 0,
+							moveCost = 0,
+							occupied = true,
+							range = 0,
+							terrain = "Road"
+						}
+					}
+				}
+			}
+		}
+	}
+}
+game:GetService("ReplicatedStorage"):WaitForChild("Connection"):WaitForChild("inGame"):WaitForChild("actions"):WaitForChild("Move"):FireServer(unpack(args))
+
+local args = {
+	"39",
+	{
+		{
+			y = -81,
+			x = -237,
+			z = 0,
+			moveCost = 0,
+			occupied = true,
+			range = 0,
+			terrain = "Road"
+		},
+		{
+			y = -82,
+			x = -237,
+			occupied = false,
+			z = 0,
+			moveCost = 1,
+			terrain = "Urban",
+			range = 1,
+			parent = {
+				y = -81,
+				x = -237,
+				z = 0,
+				moveCost = 0,
+				occupied = true,
+				range = 0,
+				terrain = "Road"
+			}
+		},
+		{
+			y = -83,
+			x = -237,
+			occupied = false,
+			z = 0,
+			moveCost = 2,
+			terrain = "Snow",
+			range = 2,
+			parent = {
+				y = -82,
+				x = -237,
+				occupied = false,
+				z = 0,
+				moveCost = 1,
+				terrain = "Urban",
+				range = 1,
+				parent = {
+					y = -81,
+					x = -237,
+					z = 0,
+					moveCost = 0,
+					occupied = true,
+					range = 0,
+					terrain = "Road"
+				}
+			}
+		},
+		{
+			y = -84,
+			x = -237,
+			occupied = false,
+			z = 0,
+			moveCost = 3,
+			terrain = "Snow",
+			range = 3,
+			parent = {
+				y = -83,
+				x = -237,
+				occupied = false,
+				z = 0,
+				moveCost = 2,
+				terrain = "Snow",
+				range = 2,
+				parent = {
+					y = -82,
+					x = -237,
+					occupied = false,
+					z = 0,
+					moveCost = 1,
+					terrain = "Urban",
+					range = 1,
+					parent = {
+						y = -81,
+						x = -237,
+						z = 0,
+						moveCost = 0,
+						occupied = true,
+						range = 0,
+						terrain = "Road"
+					}
+				}
+			}
+		},
+		{
+			y = -85,
+			x = -237,
+			occupied = false,
+			z = 0,
+			moveCost = 4,
+			terrain = "Urban",
+			range = 4,
+			parent = {
+				y = -84,
+				x = -237,
+				occupied = false,
+				z = 0,
+				moveCost = 3,
+				terrain = "Snow",
+				range = 3,
+				parent = {
+					y = -83,
+					x = -237,
+					occupied = false,
+					z = 0,
+					moveCost = 2,
+					terrain = "Snow",
+					range = 2,
+					parent = {
+						y = -82,
+						x = -237,
+						occupied = false,
+						z = 0,
+						moveCost = 1,
+						terrain = "Urban",
+						range = 1,
+						parent = {
+							y = -81,
+							x = -237,
+							z = 0,
+							moveCost = 0,
+							occupied = true,
+							range = 0,
+							terrain = "Road"
+						}
+					}
+				}
+			}
+		}
+	}
+}
+game:GetService("ReplicatedStorage"):WaitForChild("Connection"):WaitForChild("inGame"):WaitForChild("actions"):WaitForChild("Move"):FireServer(unpack(args))
+
+task.wait(0.1)
+
+readyAndWaitForTurn()
+
+local args = {
+	"40",
+	{
+		{
+			y = -80,
+			x = -243,
+			z = 0,
+			moveCost = 0,
+			occupied = true,
+			range = 0,
+			terrain = "Road"
+		},
+		{
+			y = -81,
+			x = -243,
+			occupied = false,
+			z = 0,
+			moveCost = 1,
+			terrain = "Road",
+			range = 1,
+			parent = {
+				y = -80,
+				x = -243,
+				z = 0,
+				moveCost = 0,
+				occupied = true,
+				range = 0,
+				terrain = "Road"
+			}
+		},
+		{
+			y = -82,
+			x = -243,
+			occupied = false,
+			z = 0,
+			moveCost = 2,
+			terrain = "Road",
+			range = 2,
+			parent = {
+				y = -81,
+				x = -243,
+				occupied = false,
+				z = 0,
+				moveCost = 1,
+				terrain = "Road",
+				range = 1,
+				parent = {
+					y = -80,
+					x = -243,
+					z = 0,
+					moveCost = 0,
+					occupied = true,
+					range = 0,
+					terrain = "Road"
+				}
+			}
+		},
+		{
+			y = -82,
+			x = -244,
+			occupied = false,
+			z = 0,
+			moveCost = 3,
+			terrain = "Urban",
+			range = 3,
+			parent = {
+				y = -82,
+				x = -243,
+				occupied = false,
+				z = 0,
+				moveCost = 2,
+				terrain = "Road",
+				range = 2,
+				parent = {
+					y = -81,
+					x = -243,
+					occupied = false,
+					z = 0,
+					moveCost = 1,
+					terrain = "Road",
+					range = 1,
+					parent = {
+						y = -80,
+						x = -243,
+						z = 0,
+						moveCost = 0,
+						occupied = true,
+						range = 0,
+						terrain = "Road"
+					}
+				}
+			}
+		},
+		{
+			y = -82,
+			x = -245,
+			occupied = false,
+			z = 0,
+			moveCost = 4,
+			terrain = "Snow",
+			range = 4,
+			parent = {
+				y = -82,
+				x = -244,
+				occupied = false,
+				z = 0,
+				moveCost = 3,
+				terrain = "Urban",
+				range = 3,
+				parent = {
+					y = -82,
+					x = -243,
+					occupied = false,
+					z = 0,
+					moveCost = 2,
+					terrain = "Road",
+					range = 2,
+					parent = {
+						y = -81,
+						x = -243,
+						occupied = false,
+						z = 0,
+						moveCost = 1,
+						terrain = "Road",
+						range = 1,
+						parent = {
+							y = -80,
+							x = -243,
+							z = 0,
+							moveCost = 0,
+							occupied = true,
+							range = 0,
+							terrain = "Road"
+						}
+					}
+				}
+			}
+		}
+	}
+}
+game:GetService("ReplicatedStorage"):WaitForChild("Connection"):WaitForChild("inGame"):WaitForChild("actions"):WaitForChild("Move"):FireServer(unpack(args))
+
+local args = {
+	"41",
+	{
+		{
+			y = -86,
+			x = -239,
+			z = 0,
+			moveCost = 0,
+			occupied = true,
+			range = 0,
+			terrain = "Road"
+		},
+		{
+			y = -87,
+			x = -239,
+			occupied = false,
+			z = 0,
+			moveCost = 1,
+			terrain = "Road",
+			range = 1,
+			parent = {
+				y = -86,
+				x = -239,
+				z = 0,
+				moveCost = 0,
+				occupied = true,
+				range = 0,
+				terrain = "Road"
+			}
+		},
+		{
+			y = -88,
+			x = -239,
+			occupied = false,
+			z = 0,
+			moveCost = 2,
+			terrain = "Road",
+			range = 2,
+			parent = {
+				y = -87,
+				x = -239,
+				occupied = false,
+				z = 0,
+				moveCost = 1,
+				terrain = "Road",
+				range = 1,
+				parent = {
+					y = -86,
+					x = -239,
+					z = 0,
+					moveCost = 0,
+					occupied = true,
+					range = 0,
+					terrain = "Road"
+				}
+			}
+		},
+		{
+			y = -89,
+			x = -239,
+			occupied = false,
+			z = 0,
+			moveCost = 3,
+			terrain = "Snow",
+			range = 3,
+			parent = {
+				y = -88,
+				x = -239,
+				occupied = false,
+				z = 0,
+				moveCost = 2,
+				terrain = "Road",
+				range = 2,
+				parent = {
+					y = -87,
+					x = -239,
+					occupied = false,
+					z = 0,
+					moveCost = 1,
+					terrain = "Road",
+					range = 1,
+					parent = {
+						y = -86,
+						x = -239,
+						z = 0,
+						moveCost = 0,
+						occupied = true,
+						range = 0,
+						terrain = "Road"
+					}
+				}
+			}
+		},
+		{
+			y = -90,
+			x = -239,
+			occupied = false,
+			z = 0,
+			moveCost = 4,
+			terrain = "Road",
+			range = 4,
+			parent = {
+				y = -89,
+				x = -239,
+				occupied = false,
+				z = 0,
+				moveCost = 3,
+				terrain = "Snow",
+				range = 3,
+				parent = {
+					y = -88,
+					x = -239,
+					occupied = false,
+					z = 0,
+					moveCost = 2,
+					terrain = "Road",
+					range = 2,
+					parent = {
+						y = -87,
+						x = -239,
+						occupied = false,
+						z = 0,
+						moveCost = 1,
+						terrain = "Road",
+						range = 1,
+						parent = {
+							y = -86,
+							x = -239,
+							z = 0,
+							moveCost = 0,
+							occupied = true,
+							range = 0,
+							terrain = "Road"
+						}
+					}
+				}
+			}
+		}
+	}
+}
+game:GetService("ReplicatedStorage"):WaitForChild("Connection"):WaitForChild("inGame"):WaitForChild("actions"):WaitForChild("Move"):FireServer(unpack(args))
+
+local args = {
+	"38",
+	{
+		{
+			y = -86,
+			x = -238,
+			z = 0,
+			moveCost = 0,
+			occupied = true,
+			range = 0,
+			terrain = "Urban"
+		},
+		{
+			y = -87,
+			x = -238,
+			occupied = false,
+			z = 0,
+			moveCost = 1,
+			terrain = "Urban",
+			range = 1,
+			parent = {
+				y = -86,
+				x = -238,
+				z = 0,
+				moveCost = 0,
+				occupied = true,
+				range = 0,
+				terrain = "Urban"
+			}
+		},
+		{
+			y = -88,
+			x = -238,
+			occupied = false,
+			z = 0,
+			moveCost = 2,
+			terrain = "Urban",
+			range = 2,
+			parent = {
+				y = -87,
+				x = -238,
+				occupied = false,
+				z = 0,
+				moveCost = 1,
+				terrain = "Urban",
+				range = 1,
+				parent = {
+					y = -86,
+					x = -238,
+					z = 0,
+					moveCost = 0,
+					occupied = true,
+					range = 0,
+					terrain = "Urban"
+				}
+			}
+		},
+		{
+			y = -89,
+			x = -238,
+			occupied = false,
+			z = 0,
+			moveCost = 3,
+			terrain = "Urban",
+			range = 3,
+			parent = {
+				y = -88,
+				x = -238,
+				occupied = false,
+				z = 0,
+				moveCost = 2,
+				terrain = "Urban",
+				range = 2,
+				parent = {
+					y = -87,
+					x = -238,
+					occupied = false,
+					z = 0,
+					moveCost = 1,
+					terrain = "Urban",
+					range = 1,
+					parent = {
+						y = -86,
+						x = -238,
+						z = 0,
+						moveCost = 0,
+						occupied = true,
+						range = 0,
+						terrain = "Urban"
+					}
+				}
+			}
+		},
+		{
+			y = -90,
+			x = -238,
+			occupied = false,
+			z = 0,
+			moveCost = 4,
+			terrain = "Road",
+			range = 4,
+			parent = {
+				y = -89,
+				x = -238,
+				occupied = false,
+				z = 0,
+				moveCost = 3,
+				terrain = "Urban",
+				range = 3,
+				parent = {
+					y = -88,
+					x = -238,
+					occupied = false,
+					z = 0,
+					moveCost = 2,
+					terrain = "Urban",
+					range = 2,
+					parent = {
+						y = -87,
+						x = -238,
+						occupied = false,
+						z = 0,
+						moveCost = 1,
+						terrain = "Urban",
+						range = 1,
+						parent = {
+							y = -86,
+							x = -238,
+							z = 0,
+							moveCost = 0,
+							occupied = true,
+							range = 0,
+							terrain = "Urban"
+						}
+					}
+				}
+			}
+		}
+	}
+}
+game:GetService("ReplicatedStorage"):WaitForChild("Connection"):WaitForChild("inGame"):WaitForChild("actions"):WaitForChild("Move"):FireServer(unpack(args))
+
+local args = {
+	"42",
+	{
+		{
+			y = -85,
+			x = -238,
+			z = 0,
+			moveCost = 0,
+			occupied = true,
+			range = 0,
+			terrain = "Road"
+		},
+		{
+			y = -86,
+			x = -238,
+			occupied = false,
+			z = 0,
+			moveCost = 1,
+			terrain = "Urban",
+			range = 1,
+			parent = {
+				y = -85,
+				x = -238,
+				z = 0,
+				moveCost = 0,
+				occupied = true,
+				range = 0,
+				terrain = "Road"
+			}
+		},
+		{
+			y = -87,
+			x = -238,
+			occupied = false,
+			z = 0,
+			moveCost = 2,
+			terrain = "Urban",
+			range = 2,
+			parent = {
+				y = -86,
+				x = -238,
+				occupied = false,
+				z = 0,
+				moveCost = 1,
+				terrain = "Urban",
+				range = 1,
+				parent = {
+					y = -85,
+					x = -238,
+					z = 0,
+					moveCost = 0,
+					occupied = true,
+					range = 0,
+					terrain = "Road"
+				}
+			}
+		},
+		{
+			y = -88,
+			x = -238,
+			occupied = false,
+			z = 0,
+			moveCost = 3,
+			terrain = "Urban",
+			range = 3,
+			parent = {
+				y = -87,
+				x = -238,
+				occupied = false,
+				z = 0,
+				moveCost = 2,
+				terrain = "Urban",
+				range = 2,
+				parent = {
+					y = -86,
+					x = -238,
+					occupied = false,
+					z = 0,
+					moveCost = 1,
+					terrain = "Urban",
+					range = 1,
+					parent = {
+						y = -85,
+						x = -238,
+						z = 0,
+						moveCost = 0,
+						occupied = true,
+						range = 0,
+						terrain = "Road"
+					}
+				}
+			}
+		},
+		{
+			y = -89,
+			x = -238,
+			occupied = false,
+			z = 0,
+			moveCost = 4,
+			terrain = "Urban",
+			range = 4,
+			parent = {
+				y = -88,
+				x = -238,
+				occupied = false,
+				z = 0,
+				moveCost = 3,
+				terrain = "Urban",
+				range = 3,
+				parent = {
+					y = -87,
+					x = -238,
+					occupied = false,
+					z = 0,
+					moveCost = 2,
+					terrain = "Urban",
+					range = 2,
+					parent = {
+						y = -86,
+						x = -238,
+						occupied = false,
+						z = 0,
+						moveCost = 1,
+						terrain = "Urban",
+						range = 1,
+						parent = {
+							y = -85,
+							x = -238,
+							z = 0,
+							moveCost = 0,
+							occupied = true,
+							range = 0,
+							terrain = "Road"
+						}
+					}
+				}
+			}
+		}
+	}
+}
+game:GetService("ReplicatedStorage"):WaitForChild("Connection"):WaitForChild("inGame"):WaitForChild("actions"):WaitForChild("Move"):FireServer(unpack(args))
+
+local args = {
+	"39",
+	{
+		{
+			y = -85,
+			x = -237,
+			z = 0,
+			moveCost = 0,
+			occupied = true,
+			range = 0,
+			terrain = "Urban"
+		},
+		{
+			y = -86,
+			x = -237,
+			occupied = false,
+			z = 0,
+			moveCost = 1,
+			terrain = "Snow",
+			range = 1,
+			parent = {
+				y = -85,
+				x = -237,
+				z = 0,
+				moveCost = 0,
+				occupied = true,
+				range = 0,
+				terrain = "Urban"
+			}
+		},
+		{
+			y = -87,
+			x = -237,
+			occupied = false,
+			z = 0,
+			moveCost = 2,
+			terrain = "Urban",
+			range = 2,
+			parent = {
+				y = -86,
+				x = -237,
+				occupied = false,
+				z = 0,
+				moveCost = 1,
+				terrain = "Snow",
+				range = 1,
+				parent = {
+					y = -85,
+					x = -237,
+					z = 0,
+					moveCost = 0,
+					occupied = true,
+					range = 0,
+					terrain = "Urban"
+				}
+			}
+		},
+		{
+			y = -88,
+			x = -237,
+			occupied = false,
+			z = 0,
+			moveCost = 3,
+			terrain = "Snow",
+			range = 3,
+			parent = {
+				y = -87,
+				x = -237,
+				occupied = false,
+				z = 0,
+				moveCost = 2,
+				terrain = "Urban",
+				range = 2,
+				parent = {
+					y = -86,
+					x = -237,
+					occupied = false,
+					z = 0,
+					moveCost = 1,
+					terrain = "Snow",
+					range = 1,
+					parent = {
+						y = -85,
+						x = -237,
+						z = 0,
+						moveCost = 0,
+						occupied = true,
+						range = 0,
+						terrain = "Urban"
+					}
+				}
+			}
+		},
+		{
+			y = -89,
+			x = -237,
+			occupied = false,
+			z = 0,
+			moveCost = 4,
+			terrain = "Snow",
+			range = 4,
+			parent = {
+				y = -88,
+				x = -237,
+				occupied = false,
+				z = 0,
+				moveCost = 3,
+				terrain = "Snow",
+				range = 3,
+				parent = {
+					y = -87,
+					x = -237,
+					occupied = false,
+					z = 0,
+					moveCost = 2,
+					terrain = "Urban",
+					range = 2,
+					parent = {
+						y = -86,
+						x = -237,
+						occupied = false,
+						z = 0,
+						moveCost = 1,
+						terrain = "Snow",
+						range = 1,
+						parent = {
+							y = -85,
+							x = -237,
+							z = 0,
+							moveCost = 0,
+							occupied = true,
+							range = 0,
+							terrain = "Urban"
+						}
+					}
+				}
+			}
+		}
+	}
+}
+game:GetService("ReplicatedStorage"):WaitForChild("Connection"):WaitForChild("inGame"):WaitForChild("actions"):WaitForChild("Move"):FireServer(unpack(args))
+
+task.wait(0.1)
+
+readyAndWaitForTurn()
+
+local args = {
+	"40",
+	{
+		{
+			y = -82,
+			x = -245,
+			z = 0,
+			moveCost = 0,
+			occupied = true,
+			range = 0,
+			terrain = "Snow"
+		},
+		{
+			y = -83,
+			x = -245,
+			occupied = false,
+			z = 0,
+			moveCost = 1,
+			terrain = "Road",
+			range = 1,
+			parent = {
+				y = -82,
+				x = -245,
+				z = 0,
+				moveCost = 0,
+				occupied = true,
+				range = 0,
+				terrain = "Snow"
+			}
+		},
+		{
+			y = -83,
+			x = -246,
+			occupied = false,
+			z = 0,
+			moveCost = 2,
+			terrain = "Urban",
+			range = 2,
+			parent = {
+				y = -83,
+				x = -245,
+				occupied = false,
+				z = 0,
+				moveCost = 1,
+				terrain = "Road",
+				range = 1,
+				parent = {
+					y = -82,
+					x = -245,
+					z = 0,
+					moveCost = 0,
+					occupied = true,
+					range = 0,
+					terrain = "Snow"
+				}
+			}
+		},
+		{
+			y = -83,
+			x = -247,
+			occupied = false,
+			z = 0,
+			moveCost = 3,
+			terrain = "Road",
+			range = 3,
+			parent = {
+				y = -83,
+				x = -246,
+				occupied = false,
+				z = 0,
+				moveCost = 2,
+				terrain = "Urban",
+				range = 2,
+				parent = {
+					y = -83,
+					x = -245,
+					occupied = false,
+					z = 0,
+					moveCost = 1,
+					terrain = "Road",
+					range = 1,
+					parent = {
+						y = -82,
+						x = -245,
+						z = 0,
+						moveCost = 0,
+						occupied = true,
+						range = 0,
+						terrain = "Snow"
+					}
+				}
+			}
+		}
+	}
+}
+game:GetService("ReplicatedStorage"):WaitForChild("Connection"):WaitForChild("inGame"):WaitForChild("actions"):WaitForChild("Move"):FireServer(unpack(args))
+
+local args = {
+	"40",
+	3,
+	"25"
+}
+game:GetService("ReplicatedStorage"):WaitForChild("Connection"):WaitForChild("inGame"):WaitForChild("actions"):WaitForChild("Attack"):FireServer(unpack(args))
+
+local args = {
+	"41",
+	{
+		{
+			y = -90,
+			x = -239,
+			z = 0,
+			moveCost = 0,
+			occupied = true,
+			range = 0,
+			terrain = "Road"
+		},
+		{
+			y = -91,
+			x = -239,
+			occupied = false,
+			z = 0,
+			moveCost = 1,
+			terrain = "Urban",
+			range = 1,
+			parent = {
+				y = -90,
+				x = -239,
+				z = 0,
+				moveCost = 0,
+				occupied = true,
+				range = 0,
+				terrain = "Road"
+			}
+		},
+		{
+			y = -92,
+			x = -239,
+			occupied = false,
+			z = 0,
+			moveCost = 2,
+			terrain = "Urban",
+			range = 2,
+			parent = {
+				y = -91,
+				x = -239,
+				occupied = false,
+				z = 0,
+				moveCost = 1,
+				terrain = "Urban",
+				range = 1,
+				parent = {
+					y = -90,
+					x = -239,
+					z = 0,
+					moveCost = 0,
+					occupied = true,
+					range = 0,
+					terrain = "Road"
+				}
+			}
+		},
+		{
+			y = -93,
+			x = -239,
+			occupied = false,
+			z = 0,
+			moveCost = 3,
+			terrain = "Urban",
+			range = 3,
+			parent = {
+				y = -92,
+				x = -239,
+				occupied = false,
+				z = 0,
+				moveCost = 2,
+				terrain = "Urban",
+				range = 2,
+				parent = {
+					y = -91,
+					x = -239,
+					occupied = false,
+					z = 0,
+					moveCost = 1,
+					terrain = "Urban",
+					range = 1,
+					parent = {
+						y = -90,
+						x = -239,
+						z = 0,
+						moveCost = 0,
+						occupied = true,
+						range = 0,
+						terrain = "Road"
+					}
+				}
+			}
+		},
+		{
+			y = -93,
+			x = -238,
+			occupied = false,
+			z = 0,
+			moveCost = 4,
+			terrain = "Urban",
+			range = 4,
+			parent = {
+				y = -93,
+				x = -239,
+				occupied = false,
+				z = 0,
+				moveCost = 3,
+				terrain = "Urban",
+				range = 3,
+				parent = {
+					y = -92,
+					x = -239,
+					occupied = false,
+					z = 0,
+					moveCost = 2,
+					terrain = "Urban",
+					range = 2,
+					parent = {
+						y = -91,
+						x = -239,
+						occupied = false,
+						z = 0,
+						moveCost = 1,
+						terrain = "Urban",
+						range = 1,
+						parent = {
+							y = -90,
+							x = -239,
+							z = 0,
+							moveCost = 0,
+							occupied = true,
+							range = 0,
+							terrain = "Road"
+						}
+					}
+				}
+			}
+		}
+	}
+}
+game:GetService("ReplicatedStorage"):WaitForChild("Connection"):WaitForChild("inGame"):WaitForChild("actions"):WaitForChild("Move"):FireServer(unpack(args))
+
+local args = {
+	"38",
+	{
+		{
+			y = -90,
+			x = -238,
+			z = 0,
+			moveCost = 0,
+			occupied = true,
+			range = 0,
+			terrain = "Road"
+		},
+		{
+			y = -91,
+			x = -238,
+			occupied = false,
+			z = 0,
+			moveCost = 1,
+			terrain = "Urban",
+			range = 1,
+			parent = {
+				y = -90,
+				x = -238,
+				z = 0,
+				moveCost = 0,
+				occupied = true,
+				range = 0,
+				terrain = "Road"
+			}
+		},
+		{
+			y = -92,
+			x = -238,
+			occupied = false,
+			z = 0,
+			moveCost = 2,
+			terrain = "Snow",
+			range = 2,
+			parent = {
+				y = -91,
+				x = -238,
+				occupied = false,
+				z = 0,
+				moveCost = 1,
+				terrain = "Urban",
+				range = 1,
+				parent = {
+					y = -90,
+					x = -238,
+					z = 0,
+					moveCost = 0,
+					occupied = true,
+					range = 0,
+					terrain = "Road"
+				}
+			}
+		},
+		{
+			y = -93,
+			x = -238,
+			occupied = true,
+			z = 0,
+			moveCost = 3,
+			terrain = "Urban",
+			range = 3,
+			parent = {
+				y = -92,
+				x = -238,
+				occupied = false,
+				z = 0,
+				moveCost = 2,
+				terrain = "Snow",
+				range = 2,
+				parent = {
+					y = -91,
+					x = -238,
+					occupied = false,
+					z = 0,
+					moveCost = 1,
+					terrain = "Urban",
+					range = 1,
+					parent = {
+						y = -90,
+						x = -238,
+						z = 0,
+						moveCost = 0,
+						occupied = true,
+						range = 0,
+						terrain = "Road"
+					}
+				}
+			}
+		},
+		{
+			y = -93,
+			x = -237,
+			occupied = false,
+			z = 0,
+			moveCost = 4,
+			terrain = "Snow",
+			range = 4,
+			parent = {
+				y = -93,
+				x = -238,
+				occupied = true,
+				z = 0,
+				moveCost = 3,
+				terrain = "Urban",
+				range = 3,
+				parent = {
+					y = -92,
+					x = -238,
+					occupied = false,
+					z = 0,
+					moveCost = 2,
+					terrain = "Snow",
+					range = 2,
+					parent = {
+						y = -91,
+						x = -238,
+						occupied = false,
+						z = 0,
+						moveCost = 1,
+						terrain = "Urban",
+						range = 1,
+						parent = {
+							y = -90,
+							x = -238,
+							z = 0,
+							moveCost = 0,
+							occupied = true,
+							range = 0,
+							terrain = "Road"
+						}
+					}
+				}
+			}
+		}
+	}
+}
+game:GetService("ReplicatedStorage"):WaitForChild("Connection"):WaitForChild("inGame"):WaitForChild("actions"):WaitForChild("Move"):FireServer(unpack(args))
+
+local args = {
+	"39",
+	{
+		{
+			y = -89,
+			x = -237,
+			z = 0,
+			moveCost = 0,
+			occupied = true,
+			range = 0,
+			terrain = "Snow"
+		},
+		{
+			y = -90,
+			x = -237,
+			occupied = false,
+			z = 0,
+			moveCost = 1,
+			terrain = "Road",
+			range = 1,
+			parent = {
+				y = -89,
+				x = -237,
+				z = 0,
+				moveCost = 0,
+				occupied = true,
+				range = 0,
+				terrain = "Snow"
+			}
+		},
+		{
+			y = -91,
+			x = -237,
+			occupied = false,
+			z = 0,
+			moveCost = 2,
+			terrain = "Snow",
+			range = 2,
+			parent = {
+				y = -90,
+				x = -237,
+				occupied = false,
+				z = 0,
+				moveCost = 1,
+				terrain = "Road",
+				range = 1,
+				parent = {
+					y = -89,
+					x = -237,
+					z = 0,
+					moveCost = 0,
+					occupied = true,
+					range = 0,
+					terrain = "Snow"
+				}
+			}
+		},
+		{
+			y = -91,
+			x = -236,
+			occupied = false,
+			z = 0,
+			moveCost = 3,
+			terrain = "Road",
+			range = 3,
+			parent = {
+				y = -91,
+				x = -237,
+				occupied = false,
+				z = 0,
+				moveCost = 2,
+				terrain = "Snow",
+				range = 2,
+				parent = {
+					y = -90,
+					x = -237,
+					occupied = false,
+					z = 0,
+					moveCost = 1,
+					terrain = "Road",
+					range = 1,
+					parent = {
+						y = -89,
+						x = -237,
+						z = 0,
+						moveCost = 0,
+						occupied = true,
+						range = 0,
+						terrain = "Snow"
+					}
+				}
+			}
+		}
+	}
+}
+game:GetService("ReplicatedStorage"):WaitForChild("Connection"):WaitForChild("inGame"):WaitForChild("actions"):WaitForChild("Move"):FireServer(unpack(args))
+
+local args = {
+	"42",
+	{
+		{
+			y = -89,
+			x = -238,
+			z = 0,
+			moveCost = 0,
+			occupied = true,
+			range = 0,
+			terrain = "Urban"
+		},
+		{
+			y = -90,
+			x = -238,
+			occupied = false,
+			z = 0,
+			moveCost = 1,
+			terrain = "Road",
+			range = 1,
+			parent = {
+				y = -89,
+				x = -238,
+				z = 0,
+				moveCost = 0,
+				occupied = true,
+				range = 0,
+				terrain = "Urban"
+			}
+		},
+		{
+			y = -91,
+			x = -238,
+			occupied = false,
+			z = 0,
+			moveCost = 2,
+			terrain = "Urban",
+			range = 2,
+			parent = {
+				y = -90,
+				x = -238,
+				occupied = false,
+				z = 0,
+				moveCost = 1,
+				terrain = "Road",
+				range = 1,
+				parent = {
+					y = -89,
+					x = -238,
+					z = 0,
+					moveCost = 0,
+					occupied = true,
+					range = 0,
+					terrain = "Urban"
+				}
+			}
+		},
+		{
+			y = -92,
+			x = -238,
+			occupied = false,
+			z = 0,
+			moveCost = 3,
+			terrain = "Snow",
+			range = 3,
+			parent = {
+				y = -91,
+				x = -238,
+				occupied = false,
+				z = 0,
+				moveCost = 2,
+				terrain = "Urban",
+				range = 2,
+				parent = {
+					y = -90,
+					x = -238,
+					occupied = false,
+					z = 0,
+					moveCost = 1,
+					terrain = "Road",
+					range = 1,
+					parent = {
+						y = -89,
+						x = -238,
+						z = 0,
+						moveCost = 0,
+						occupied = true,
+						range = 0,
+						terrain = "Urban"
+					}
+				}
+			}
+		},
+		{
+			y = -92,
+			x = -237,
+			occupied = false,
+			z = 0,
+			moveCost = 4,
+			terrain = "Snow",
+			range = 4,
+			parent = {
+				y = -92,
+				x = -238,
+				occupied = false,
+				z = 0,
+				moveCost = 3,
+				terrain = "Snow",
+				range = 3,
+				parent = {
+					y = -91,
+					x = -238,
+					occupied = false,
+					z = 0,
+					moveCost = 2,
+					terrain = "Urban",
+					range = 2,
+					parent = {
+						y = -90,
+						x = -238,
+						occupied = false,
+						z = 0,
+						moveCost = 1,
+						terrain = "Road",
+						range = 1,
+						parent = {
+							y = -89,
+							x = -238,
+							z = 0,
+							moveCost = 0,
+							occupied = true,
+							range = 0,
+							terrain = "Urban"
+						}
+					}
+				}
+			}
+		}
+	}
+}
+game:GetService("ReplicatedStorage"):WaitForChild("Connection"):WaitForChild("inGame"):WaitForChild("actions"):WaitForChild("Move"):FireServer(unpack(args))
+
+local args = {
+	"42",
+	3,
+	"2"
+}
+game:GetService("ReplicatedStorage"):WaitForChild("Connection"):WaitForChild("inGame"):WaitForChild("actions"):WaitForChild("Attack"):FireServer(unpack(args))
+
+local args = {
+	"39",
+	3,
+	"2"
+}
+game:GetService("ReplicatedStorage"):WaitForChild("Connection"):WaitForChild("inGame"):WaitForChild("actions"):WaitForChild("Attack"):FireServer(unpack(args))
+
+task.wait(0.1)
+
+readyAndWaitForTurn()
+
+local args = {
+	"40",
+	3,
+	"25"
+}
+game:GetService("ReplicatedStorage"):WaitForChild("Connection"):WaitForChild("inGame"):WaitForChild("actions"):WaitForChild("Attack"):FireServer(unpack(args))
+
+
+local args = {
+	"38",
+	{
+		{
+			y = -93,
+			x = -237,
+			z = 0,
+			moveCost = 0,
+			occupied = true,
+			range = 0,
+			terrain = "Snow"
+		},
+		{
+			y = -94,
+			x = -237,
+			occupied = false,
+			z = 0,
+			moveCost = 1,
+			terrain = "Urban",
+			range = 1,
+			parent = {
+				y = -93,
+				x = -237,
+				z = 0,
+				moveCost = 0,
+				occupied = true,
+				range = 0,
+				terrain = "Snow"
+			}
+		},
+		{
+			y = -95,
+			x = -237,
+			occupied = false,
+			z = 0,
+			moveCost = 2,
+			terrain = "Urban",
+			range = 2,
+			parent = {
+				y = -94,
+				x = -237,
+				occupied = false,
+				z = 0,
+				moveCost = 1,
+				terrain = "Urban",
+				range = 1,
+				parent = {
+					y = -93,
+					x = -237,
+					z = 0,
+					moveCost = 0,
+					occupied = true,
+					range = 0,
+					terrain = "Snow"
+				}
+			}
+		},
+		{
+			y = -95,
+			x = -236,
+			occupied = false,
+			z = 0,
+			moveCost = 3,
+			terrain = "Urban",
+			range = 3,
+			parent = {
+				y = -95,
+				x = -237,
+				occupied = false,
+				z = 0,
+				moveCost = 2,
+				terrain = "Urban",
+				range = 2,
+				parent = {
+					y = -94,
+					x = -237,
+					occupied = false,
+					z = 0,
+					moveCost = 1,
+					terrain = "Urban",
+					range = 1,
+					parent = {
+						y = -93,
+						x = -237,
+						z = 0,
+						moveCost = 0,
+						occupied = true,
+						range = 0,
+						terrain = "Snow"
+					}
+				}
+			}
+		},
+		{
+			y = -95,
+			x = -235,
+			occupied = false,
+			z = 0,
+			moveCost = 4,
+			terrain = "Urban",
+			range = 4,
+			parent = {
+				y = -95,
+				x = -236,
+				occupied = false,
+				z = 0,
+				moveCost = 3,
+				terrain = "Urban",
+				range = 3,
+				parent = {
+					y = -95,
+					x = -237,
+					occupied = false,
+					z = 0,
+					moveCost = 2,
+					terrain = "Urban",
+					range = 2,
+					parent = {
+						y = -94,
+						x = -237,
+						occupied = false,
+						z = 0,
+						moveCost = 1,
+						terrain = "Urban",
+						range = 1,
+						parent = {
+							y = -93,
+							x = -237,
+							z = 0,
+							moveCost = 0,
+							occupied = true,
+							range = 0,
+							terrain = "Snow"
+						}
+					}
+				}
+			}
+		}
+	}
+}
+game:GetService("ReplicatedStorage"):WaitForChild("Connection"):WaitForChild("inGame"):WaitForChild("actions"):WaitForChild("Move"):FireServer(unpack(args))
+
+local args = {
+	"41",
+	{
+		{
+			y = -93,
+			x = -238,
+			z = 0,
+			moveCost = 0,
+			occupied = true,
+			range = 0,
+			terrain = "Urban"
+		},
+		{
+			y = -94,
+			x = -238,
+			occupied = false,
+			z = 0,
+			moveCost = 1,
+			terrain = "Urban",
+			range = 1,
+			parent = {
+				y = -93,
+				x = -238,
+				z = 0,
+				moveCost = 0,
+				occupied = true,
+				range = 0,
+				terrain = "Urban"
+			}
+		},
+		{
+			y = -95,
+			x = -238,
+			occupied = false,
+			z = 0,
+			moveCost = 2,
+			terrain = "Road",
+			range = 2,
+			parent = {
+				y = -94,
+				x = -238,
+				occupied = false,
+				z = 0,
+				moveCost = 1,
+				terrain = "Urban",
+				range = 1,
+				parent = {
+					y = -93,
+					x = -238,
+					z = 0,
+					moveCost = 0,
+					occupied = true,
+					range = 0,
+					terrain = "Urban"
+				}
+			}
+		},
+		{
+			y = -96,
+			x = -238,
+			occupied = false,
+			z = 0,
+			moveCost = 3,
+			terrain = "Road",
+			range = 3,
+			parent = {
+				y = -95,
+				x = -238,
+				occupied = false,
+				z = 0,
+				moveCost = 2,
+				terrain = "Road",
+				range = 2,
+				parent = {
+					y = -94,
+					x = -238,
+					occupied = false,
+					z = 0,
+					moveCost = 1,
+					terrain = "Urban",
+					range = 1,
+					parent = {
+						y = -93,
+						x = -238,
+						z = 0,
+						moveCost = 0,
+						occupied = true,
+						range = 0,
+						terrain = "Urban"
+					}
+				}
+			}
+		},
+		{
+			y = -96,
+			x = -237,
+			occupied = false,
+			z = 0,
+			moveCost = 4,
+			terrain = "Urban",
+			range = 4,
+			parent = {
+				y = -96,
+				x = -238,
+				occupied = false,
+				z = 0,
+				moveCost = 3,
+				terrain = "Road",
+				range = 3,
+				parent = {
+					y = -95,
+					x = -238,
+					occupied = false,
+					z = 0,
+					moveCost = 2,
+					terrain = "Road",
+					range = 2,
+					parent = {
+						y = -94,
+						x = -238,
+						occupied = false,
+						z = 0,
+						moveCost = 1,
+						terrain = "Urban",
+						range = 1,
+						parent = {
+							y = -93,
+							x = -238,
+							z = 0,
+							moveCost = 0,
+							occupied = true,
+							range = 0,
+							terrain = "Urban"
+						}
+					}
+				}
+			}
+		}
+	}
+}
+game:GetService("ReplicatedStorage"):WaitForChild("Connection"):WaitForChild("inGame"):WaitForChild("actions"):WaitForChild("Move"):FireServer(unpack(args))
+
+
+task.wait(0.1)
+
+readyAndWaitForTurn()
+
+local args = {
+	"38",
+	{
+		{
+			y = -95,
+			x = -235,
+			z = 0,
+			moveCost = 0,
+			occupied = true,
+			range = 0,
+			terrain = "Urban"
+		},
+		{
+			y = -96,
+			x = -235,
+			occupied = false,
+			z = 0,
+			moveCost = 1,
+			terrain = "Snow",
+			range = 1,
+			parent = {
+				y = -95,
+				x = -235,
+				z = 0,
+				moveCost = 0,
+				occupied = true,
+				range = 0,
+				terrain = "Urban"
+			}
+		},
+		{
+			y = -97,
+			x = -235,
+			occupied = false,
+			z = 0,
+			moveCost = 2,
+			terrain = "Road",
+			range = 2,
+			parent = {
+				y = -96,
+				x = -235,
+				occupied = false,
+				z = 0,
+				moveCost = 1,
+				terrain = "Snow",
+				range = 1,
+				parent = {
+					y = -95,
+					x = -235,
+					z = 0,
+					moveCost = 0,
+					occupied = true,
+					range = 0,
+					terrain = "Urban"
+				}
+			}
+		},
+		{
+			y = -98,
+			x = -235,
+			occupied = false,
+			z = 0,
+			moveCost = 3,
+			terrain = "Urban",
+			range = 3,
+			parent = {
+				y = -97,
+				x = -235,
+				occupied = false,
+				z = 0,
+				moveCost = 2,
+				terrain = "Road",
+				range = 2,
+				parent = {
+					y = -96,
+					x = -235,
+					occupied = false,
+					z = 0,
+					moveCost = 1,
+					terrain = "Snow",
+					range = 1,
+					parent = {
+						y = -95,
+						x = -235,
+						z = 0,
+						moveCost = 0,
+						occupied = true,
+						range = 0,
+						terrain = "Urban"
+					}
+				}
+			}
+		},
+		{
+			y = -98,
+			x = -234,
+			occupied = false,
+			z = 0,
+			moveCost = 4,
+			terrain = "Road",
+			range = 4,
+			parent = {
+				y = -98,
+				x = -235,
+				occupied = false,
+				z = 0,
+				moveCost = 3,
+				terrain = "Urban",
+				range = 3,
+				parent = {
+					y = -97,
+					x = -235,
+					occupied = false,
+					z = 0,
+					moveCost = 2,
+					terrain = "Road",
+					range = 2,
+					parent = {
+						y = -96,
+						x = -235,
+						occupied = false,
+						z = 0,
+						moveCost = 1,
+						terrain = "Snow",
+						range = 1,
+						parent = {
+							y = -95,
+							x = -235,
+							z = 0,
+							moveCost = 0,
+							occupied = true,
+							range = 0,
+							terrain = "Urban"
+						}
+					}
+				}
+			}
+		}
+	}
+}
+game:GetService("ReplicatedStorage"):WaitForChild("Connection"):WaitForChild("inGame"):WaitForChild("actions"):WaitForChild("Move"):FireServer(unpack(args))
+
+
+local args = {
+	"41",
+	{
+		{
+			y = -96,
+			x = -237,
+			z = 0,
+			moveCost = 0,
+			occupied = true,
+			range = 0,
+			terrain = "Urban"
+		},
+		{
+			y = -97,
+			x = -237,
+			occupied = false,
+			z = 0,
+			moveCost = 1,
+			terrain = "Road",
+			range = 1,
+			parent = {
+				y = -96,
+				x = -237,
+				z = 0,
+				moveCost = 0,
+				occupied = true,
+				range = 0,
+				terrain = "Urban"
+			}
+		},
+		{
+			y = -98,
+			x = -237,
+			occupied = false,
+			z = 0,
+			moveCost = 2,
+			terrain = "Urban",
+			range = 2,
+			parent = {
+				y = -97,
+				x = -237,
+				occupied = false,
+				z = 0,
+				moveCost = 1,
+				terrain = "Road",
+				range = 1,
+				parent = {
+					y = -96,
+					x = -237,
+					z = 0,
+					moveCost = 0,
+					occupied = true,
+					range = 0,
+					terrain = "Urban"
+				}
+			}
+		},
+		{
+			y = -99,
+			x = -237,
+			occupied = false,
+			z = 0,
+			moveCost = 3,
+			terrain = "Snow",
+			range = 3,
+			parent = {
+				y = -98,
+				x = -237,
+				occupied = false,
+				z = 0,
+				moveCost = 2,
+				terrain = "Urban",
+				range = 2,
+				parent = {
+					y = -97,
+					x = -237,
+					occupied = false,
+					z = 0,
+					moveCost = 1,
+					terrain = "Road",
+					range = 1,
+					parent = {
+						y = -96,
+						x = -237,
+						z = 0,
+						moveCost = 0,
+						occupied = true,
+						range = 0,
+						terrain = "Urban"
+					}
+				}
+			}
+		},
+		{
+			y = -99,
+			x = -236,
+			occupied = false,
+			z = 0,
+			moveCost = 4,
+			terrain = "Snow",
+			range = 4,
+			parent = {
+				y = -99,
+				x = -237,
+				occupied = false,
+				z = 0,
+				moveCost = 3,
+				terrain = "Snow",
+				range = 3,
+				parent = {
+					y = -98,
+					x = -237,
+					occupied = false,
+					z = 0,
+					moveCost = 2,
+					terrain = "Urban",
+					range = 2,
+					parent = {
+						y = -97,
+						x = -237,
+						occupied = false,
+						z = 0,
+						moveCost = 1,
+						terrain = "Road",
+						range = 1,
+						parent = {
+							y = -96,
+							x = -237,
+							z = 0,
+							moveCost = 0,
+							occupied = true,
+							range = 0,
+							terrain = "Urban"
+						}
+					}
+				}
+			}
+		}
+	}
+}
+game:GetService("ReplicatedStorage"):WaitForChild("Connection"):WaitForChild("inGame"):WaitForChild("actions"):WaitForChild("Move"):FireServer(unpack(args))
+
+local args = {
+	"41",
+	3,
+	"3"
+}
+game:GetService("ReplicatedStorage"):WaitForChild("Connection"):WaitForChild("inGame"):WaitForChild("actions"):WaitForChild("Attack"):FireServer(unpack(args))
+
+local args = {
+	"38",
+	3,
+	"3"
+}
+game:GetService("ReplicatedStorage"):WaitForChild("Connection"):WaitForChild("inGame"):WaitForChild("actions"):WaitForChild("Attack"):FireServer(unpack(args))
+
+task.wait(2.5)
+
+
+
+    setStatus("Combat sequence complete: waiting for match result")
+    while not matchEnded and not returnButtonVisible() do
+        task.wait(0.1)
+    end
+    for _, eventConnection in ipairs(endConnections) do
+        eventConnection:Disconnect()
+    end
+    task.wait(1)
+    queueNext("lobby")
+    setStatus("Returning to lobby; next run queued")
+    armTeleportFallback(true)
+    inGame:WaitForChild("ReturnBack"):FireServer()
+end, function(message)
+    return debug.traceback(tostring(message), 2)
+end)
+
+if not success then
+    environment[runKey] = nil
+    statusLabel.TextColor3 = Color3.fromRGB(255, 110, 110)
+    statusLabel.Text = "AUTOFARM STOPPED\n" .. tostring(failure)
+end
+]====]
+
+local execute, failure = loadstring("local source = " .. string.format("%q", source) .. "\n" .. source)
+assert(execute, failure)
+execute()
